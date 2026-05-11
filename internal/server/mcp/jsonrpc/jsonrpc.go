@@ -14,20 +14,28 @@
 
 package jsonrpc
 
+import (
+	"fmt"
+
+	mcputil "github.com/googleapis/mcp-toolbox/internal/server/mcp/util"
+)
+
 // JSONRPC_VERSION is the version of JSON-RPC used by MCP.
 const JSONRPC_VERSION = "2.0"
 
 const (
 	// Standard JSON-RPC error codes
-	PARSE_ERROR      = -32700
-	INVALID_REQUEST  = -32600
-	METHOD_NOT_FOUND = -32601
-	INVALID_PARAMS   = -32602
-	INTERNAL_ERROR   = -32603
+	PARSE_ERROR                        = -32700
+	INVALID_REQUEST                    = -32600
+	METHOD_NOT_FOUND                   = -32601
+	INVALID_PARAMS                     = -32602
+	INTERNAL_ERROR                     = -32603
+	HEADER_MISMATCH                    = -32001
+	MISSING_REQUIRED_CLIENT_CAPABILITY = -32003
 
 	// Custom auth error codes
-	UNAUTHORIZED = -32001
-	FORBIDDEN    = -32003
+	UNAUTHORIZED = -401
+	FORBIDDEN    = -403
 )
 
 // ProgressToken is used to associate progress notifications with the original request.
@@ -40,20 +48,85 @@ type RequestId interface{}
 // Request represents a bidirectional message with method and parameters expecting a response.
 type Request struct {
 	Method string `json:"method"`
-	Params struct {
-		Meta struct {
-			// If specified, the caller is requesting out-of-band progress
-			// notifications for this request (as represented by
-			// notifications/progress). The value of this parameter is an
-			// opaque token that will be attached to any subsequent
-			// notifications. The receiver is not obligated to provide these
-			// notifications.
-			ProgressToken ProgressToken `json:"progressToken,omitempty"`
-			// W3C Trace Context fields for distributed tracing
-			Traceparent string `json:"traceparent,omitempty"`
-			Tracestate  string `json:"tracestate,omitempty"`
-		} `json:"_meta,omitempty"`
-	} `json:"params,omitempty"`
+}
+
+type RequestParams struct {
+	Meta *RequestMetaObject `json:"_meta"`
+}
+
+type RequestMetaObject struct {
+	// If specified, the caller is requesting out-of-band progress
+	// notifications for this request (as represented by
+	// notifications/progress). The value of this parameter is an
+	// opaque token that will be attached to any subsequent
+	// notifications. The receiver is not obligated to provide these
+	// notifications.
+	ProgressToken ProgressToken `json:"progressToken,omitempty"`
+	/**
+	 * The MCP Protocol Version being used for this request. Required.
+	 *
+	 * For the HTTP transport, this value MUST match the `MCP-Protocol-Version`
+	 * header; otherwise the server MUST return a `400 Bad Request`. If the
+	 * server does not support the requested version, it MUST return an
+	 * UnsupportedProtocolVersionError.
+	 */
+	ProtocolVersion string `json:"io.modelcontextprotocol/protocolVersion"`
+	/**
+	 * Identifies the client software making the request. Required.
+	 *
+	 * The Implementation schema requires `name` and `version`; other
+	 * fields are optional.
+	 */
+	ClientInfo Implementation `json:"io.modelcontextprotocol/clientInfo"`
+	/**
+	 * The client's capabilities for this specific request. Required.
+	 *
+	 * Capabilities are declared per-request rather than once at initialization;
+	 * an empty object means the client supports no optional capabilities.
+	 * Servers MUST NOT infer capabilities from prior requests.
+	 */
+	MetaClientCapabilities *ClientCapabilities `json:"io.modelcontextprotocol/clientCapabilities"`
+
+	// W3C Trace Context fields for distributed tracing
+	Traceparent string `json:"traceparent,omitempty"`
+	Tracestate  string `json:"tracestate,omitempty"`
+}
+
+// Base interface for metadata with name (identifier) and title (display name) properties.
+type BaseMetadata struct {
+	// Intended for programmatic or logical use, but used as a display name in past specs
+	// or fallback (if title isn't present).
+	Name string `json:"name"`
+	// Intended for UI and end-user contexts — optimized to be human-readable and easily understood,
+	//even by those unfamiliar with domain-specific terminology.
+	//
+	// If not provided, the name should be used for display (except for Tool,
+	// where `annotations.title` should be given precedence over using `name`,
+	// if present).
+	Title string `json:"title,omitempty"`
+}
+
+// Implementation describes the name and version of an MCP implementation.
+type Implementation struct {
+	BaseMetadata
+	Version string `json:"version"`
+}
+
+// ListChange represents whether the server supports notification for changes to the capabilities.
+type ListChanged struct {
+	ListChanged *bool `json:"listChanged,omitempty"`
+}
+
+// ClientCapabilities represents capabilities a client may support. Known
+// capabilities are defined here, in this schema, but this is not a closed set: any
+// client can define its own, additional capabilities.
+type ClientCapabilities struct {
+	// Experimental, non-standard capabilities that the client supports.
+	Experimental map[string]interface{} `json:"experimental,omitempty"`
+	// Present if the client supports listing roots.
+	Roots *ListChanged `json:"roots,omitempty"`
+	// Present if the client supports sampling from an LLM.
+	Sampling struct{} `json:"sampling,omitempty"`
 }
 
 // JSONRPCRequest represents a request that expects a response.
@@ -135,9 +208,10 @@ type JSONRPCError struct {
 
 // Generic baseMessage could either be a JSONRPCNotification or JSONRPCRequest
 type BaseMessage struct {
-	Jsonrpc string    `json:"jsonrpc"`
-	Method  string    `json:"method"`
-	Id      RequestId `json:"id,omitempty"`
+	Jsonrpc string         `json:"jsonrpc"`
+	Method  string         `json:"method"`
+	Id      RequestId      `json:"id,omitempty"`
+	Params  *RequestParams `json:"params,omitempty"`
 }
 
 // NewError is the standard JSONRPC response sent back when an error has been encountered.
@@ -149,6 +223,36 @@ func NewError(id RequestId, code int, message string, data any) JSONRPCError {
 			Code:    code,
 			Message: message,
 			Data:    data,
+		},
+	}
+}
+
+func NewUnsupportedProtocolVersionError(id RequestId, v string) (JSONRPCError, error) {
+	err := fmt.Errorf("unsupported protocol version")
+	return JSONRPCError{
+		Jsonrpc: JSONRPC_VERSION,
+		Id:      id,
+		Error: Error{
+			Code:    INVALID_PARAMS,
+			Message: err.Error(),
+			Data: struct {
+				Supported []string `json:"supported"`
+				Requested string   `json:"requested"`
+			}{
+				Supported: mcputil.SUPPORTED_PROTOCOL_VERSIONS,
+				Requested: v,
+			},
+		},
+	}, err
+}
+
+func NewHeaderMismatchedError(id RequestId, err error) JSONRPCError {
+	return JSONRPCError{
+		Jsonrpc: JSONRPC_VERSION,
+		Id:      id,
+		Error: Error{
+			Code:    HEADER_MISMATCH,
+			Message: err.Error(),
 		},
 	}
 }

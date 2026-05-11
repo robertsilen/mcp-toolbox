@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -522,11 +523,6 @@ func httpHandler(s *Server, w http.ResponseWriter, r *http.Request) {
 	// Only supported for v2025-06-18+.
 	headerProtocolVersion := r.Header.Get("MCP-Protocol-Version")
 	if headerProtocolVersion != "" {
-		if !mcp.VerifyProtocolVersion(headerProtocolVersion) {
-			err := fmt.Errorf("invalid protocol version: %s", headerProtocolVersion)
-			_ = render.Render(w, r, newErrResponse(err, http.StatusBadRequest))
-			return
-		}
 		protocolVersion = headerProtocolVersion
 	}
 
@@ -585,6 +581,14 @@ func httpHandler(s *Server, w http.ResponseWriter, r *http.Request) {
 			var clientServerErr *util.ClientServerError
 			if errors.As(err, &clientServerErr) {
 				w.WriteHeader(clientServerErr.Code)
+			}
+		case jsonrpc.METHOD_NOT_FOUND:
+			w.WriteHeader(http.StatusNotFound)
+		case jsonrpc.HEADER_MISMATCH:
+			w.WriteHeader(http.StatusBadRequest)
+		case jsonrpc.INVALID_PARAMS:
+			if strings.Contains(rpcResponse.Error.Message, "unsupported protocol version") {
+				w.WriteHeader(http.StatusBadRequest)
 			}
 		}
 	}
@@ -720,11 +724,49 @@ func processMcpMessage(ctx context.Context, body []byte, s *Server, protocolVers
 		return "", nil, err
 	}
 
-	// Add instrumentation to context for use in method handlers
-	ctx = util.WithInstrumentation(ctx, s.instrumentation)
+	// Check _meta field for protocol version
+	// This is only expected for v2026+. Throw error if Params.Meta is missing
+	// from relevant versions
+	if baseMessage.Params != nil && baseMessage.Params.Meta != nil && baseMessage.Params.Meta.ProtocolVersion != "" {
+		// check for protocol version metadata
+		v := baseMessage.Params.Meta.ProtocolVersion
+		if v == "" {
+			metaErr := fmt.Errorf("missing io.modelcontextprotocol/protocolVersion")
+			return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_PARAMS, metaErr.Error(), nil), metaErr
+		}
+		if header != nil {
+			if protocolVersion != v {
+				metaErr := fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", protocolVersion, v)
+				return "", jsonrpc.NewHeaderMismatchedError(baseMessage.Id, metaErr), metaErr
+			}
+		}
+		// do not have to verify header for stdio
+		protocolVersion = v
 
+		// check for clientInfo
+		clientInfo := baseMessage.Params.Meta.ClientInfo
+		if clientInfo.Version == "" || clientInfo.Name == "" {
+			metaErr := fmt.Errorf("missing field from io.modelcontextprotocol/clientInfo")
+			return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_PARAMS, metaErr.Error(), nil), metaErr
+		}
+		// check for clientCapabilities
+		clientCapabilities := baseMessage.Params.Meta.MetaClientCapabilities
+		if clientCapabilities == nil {
+			metaErr := fmt.Errorf("missing field from io.modelcontextprotocol/clientCapabilities")
+			return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_PARAMS, metaErr.Error(), nil), metaErr
+		}
+		// skip checking clientCapabilities since Toolbox do not utilize any of those
+	} else if protocolVersion == mcputil.VERSION_DRAFT {
+		metaErr := fmt.Errorf("missing required fields in request metadata")
+		return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_PARAMS, metaErr.Error(), nil), metaErr
+	}
+
+	// Add instrumentation and toolbox version to context for use in method handlers
+	ctx = util.WithInstrumentation(ctx, s.instrumentation)
+	ctx = util.WithToolboxVersionKey(ctx, s.version)
 	// Process the method
 	switch baseMessage.Method {
+	// This is only used for <v2026
 	case "initialize":
 		var initReq struct {
 			Params struct {
@@ -744,7 +786,6 @@ func processMcpMessage(ctx context.Context, body []byte, s *Server, protocolVers
 			version = mcputil.LATEST_PROTOCOL_VERSION
 		}
 
-		ctx = util.WithToolboxVersionKey(ctx, s.version)
 		result, err := mcp.ProcessMethod(ctx, version, baseMessage.Id, baseMessage.Method, tools.Toolset{}, prompts.Promptset{}, nil, body, nil)
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())

@@ -29,12 +29,85 @@ const PROTOCOL_VERSION = mcputil.VERSION_DRAFT
 
 // methods that are supported.
 const (
-	PING         = "ping"
-	TOOLS_LIST   = "tools/list"
-	TOOLS_CALL   = "tools/call"
-	PROMPTS_LIST = "prompts/list"
-	PROMPTS_GET  = "prompts/get"
+	SERVER_DISCOVER = "server/discover"
+	TOOLS_LIST      = "tools/list"
+	TOOLS_CALL      = "tools/call"
+	PROMPTS_LIST    = "prompts/list"
+	PROMPTS_GET     = "prompts/get"
 )
+
+/* Discovery */
+
+/**
+ * A request from the client asking the server to advertise its supported
+ * protocol versions, capabilities, and other metadata. Servers **MUST**
+ * implement `server/discover`. Clients **MAY** call it but are not required
+ * to — version negotiation can also happen inline via per-request `_meta`.
+ */
+type DiscoverRequest struct {
+	jsonrpc.Request
+	Params jsonrpc.RequestParams `json:"params,omitempty"`
+}
+
+// The result returned by the server for a {@link DiscoverRequest | server/discover} request.
+type DiscoverResult struct {
+	jsonrpc.Result
+	/**
+	 * MCP Protocol Versions this server supports. The client should choose a
+	 * version from this list for use in subsequent requests.
+	 */
+	SupportedVersions []string `json:"supportedVersions"`
+	/**
+	 * The capabilities of the server.
+	 */
+	Capabilities ServerCapabilities `json:"capabilities"`
+	/**
+	 * Information about the server software implementation.
+	 */
+	ServerInfo Implementation `json:"serverInfo"`
+	/**
+	 * Natural-language guidance describing the server and its features.
+	 *
+	 * This can be used by clients to improve an LLM's understanding of
+	 * available tools (e.g., by including it in a system prompt). It should
+	 * focus on information that helps the model use the server effectively
+	 * and should not duplicate information already in tool descriptions.
+	 */
+	Instructions string `json:"instructions,omitempty"`
+}
+
+// Base interface for metadata with name (identifier) and title (display name) properties.
+type BaseMetadata struct {
+	// Intended for programmatic or logical use, but used as a display name in past specs
+	// or fallback (if title isn't present).
+	Name string `json:"name"`
+	// Intended for UI and end-user contexts — optimized to be human-readable and easily understood,
+	//even by those unfamiliar with domain-specific terminology.
+	//
+	// If not provided, the name should be used for display (except for Tool,
+	// where `annotations.title` should be given precedence over using `name`,
+	// if present).
+	Title string `json:"title,omitempty"`
+}
+
+// Implementation describes the name and version of an MCP implementation.
+type Implementation struct {
+	BaseMetadata
+	Version string `json:"version"`
+}
+
+// ServerCapabilities represents capabilities that a server may support. Known
+// capabilities are defined here, in this schema, but this is not a closed set: any
+// server can define its own, additional capabilities.
+type ServerCapabilities struct {
+	Tools   *ListChanged `json:"tools,omitempty"`
+	Prompts *ListChanged `json:"prompts,omitempty"`
+}
+
+// ListChange represents whether the server supports notification for changes to the capabilities.
+type ListChanged struct {
+	ListChanged *bool `json:"listChanged,omitempty"`
+}
 
 /* Empty result */
 
@@ -46,13 +119,17 @@ type EmptyResult jsonrpc.Result
 // Cursor is an opaque token used to represent a cursor for pagination.
 type Cursor string
 
+// Common params for paginated requests.
 type PaginatedRequest struct {
 	jsonrpc.Request
-	Params struct {
-		// An opaque token representing the current pagination position.
-		// If provided, the server should return results starting after this cursor.
-		Cursor Cursor `json:"cursor,omitempty"`
-	} `json:"params,omitempty"`
+	Params PaginatedRequestParams `json:"params,omitempty"`
+}
+
+type PaginatedRequestParams struct {
+	jsonrpc.RequestParams
+	// An opaque token representing the current pagination position.
+	// If provided, the server should return results starting after this cursor.
+	Cursor Cursor `json:"cursor,omitempty"`
 }
 
 type PaginatedResult struct {
@@ -78,10 +155,20 @@ type ListToolsResult struct {
 // Used by the client to invoke a tool provided by the server.
 type CallToolRequest struct {
 	jsonrpc.Request
-	Params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments,omitempty"`
-	} `json:"params,omitempty"`
+	Params CallToolRequestParams `json:"params,omitempty"`
+}
+
+// Parameters for a `tools/call` request.
+type CallToolRequestParams struct {
+	jsonrpc.RequestParams
+	/**
+	 * The name of the tool.
+	 */
+	Name string `json:"name"`
+	/**
+	 * Arguments to use for the tool call.
+	 */
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // The sender or recipient of messages and data in a conversation.
@@ -200,10 +287,14 @@ type ListPromptsResult struct {
 // Used by the client to get a prompt provided by the server.
 type GetPromptRequest struct {
 	jsonrpc.Request
-	Params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments,omitempty"`
-	} `json:"params"`
+	Params GetPromptRequestParams `json:"params"`
+}
+
+// Parameters for a `prompts/get` request.
+type GetPromptRequestParams struct {
+	jsonrpc.RequestParams
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // The server's response to a prompts/get request from the client.

@@ -25,6 +25,7 @@ import (
 
 	"github.com/googleapis/mcp-toolbox/internal/prompts"
 	"github.com/googleapis/mcp-toolbox/internal/server/mcp/jsonrpc"
+	mcputil "github.com/googleapis/mcp-toolbox/internal/server/mcp/util"
 	"github.com/googleapis/mcp-toolbox/internal/server/resources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
 	"github.com/googleapis/mcp-toolbox/internal/util"
@@ -37,8 +38,8 @@ import (
 // ProcessMethod returns a response for the request.
 func ProcessMethod(ctx context.Context, id jsonrpc.RequestId, method string, toolset tools.Toolset, promptset prompts.Promptset, resourceMgr *resources.ResourceManager, body []byte, header http.Header) (any, error) {
 	switch method {
-	case PING:
-		return pingHandler(id)
+	case SERVER_DISCOVER:
+		return serverDiscoverHandler(ctx, id, body)
 	case TOOLS_LIST:
 		return toolsListHandler(id, toolset, body)
 	case TOOLS_CALL:
@@ -53,13 +54,43 @@ func ProcessMethod(ctx context.Context, id jsonrpc.RequestId, method string, too
 	}
 }
 
-// pingHandler handles the "ping" method by returning an empty response.
-func pingHandler(id jsonrpc.RequestId) (any, error) {
-	return jsonrpc.JSONRPCResponse{
+func serverDiscoverHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (any, error) {
+	v, err := util.ToolboxVersionFromContext(ctx)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+
+	var req DiscoverRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid server discover request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+
+	toolsListChanged := false
+	promptsListChanged := false
+	result := DiscoverResult{
+		SupportedVersions: mcputil.SUPPORTED_PROTOCOL_VERSIONS,
+		Capabilities: ServerCapabilities{
+			Tools: &ListChanged{
+				ListChanged: &toolsListChanged,
+			},
+			Prompts: &ListChanged{
+				ListChanged: &promptsListChanged,
+			},
+		},
+		ServerInfo: Implementation{
+			BaseMetadata: BaseMetadata{
+				Name: SERVER_NAME,
+			},
+			Version: v,
+		},
+	}
+	res := jsonrpc.JSONRPCResponse{
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
 		Id:      id,
-		Result:  struct{}{},
-	}, nil
+		Result:  result,
+	}
+	return res, nil
 }
 
 func toolsListHandler(id jsonrpc.RequestId, toolset tools.Toolset, body []byte) (any, error) {
