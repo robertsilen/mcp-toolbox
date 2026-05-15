@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0](https://github.com/googleapis/mcp-toolbox/compare/v1.2.0...v1.3.0) (2026-05-15)
+
+
+### Features
+
+* **auth:** Implement MCP auth tool-level scopes validation ([#3049](https://github.com/googleapis/mcp-toolbox/issues/3049)) ([c528985](https://github.com/googleapis/mcp-toolbox/commit/c528985149060adb648f85b5486391bd72d6727e))
+
+
+### Bug Fixes
+
+* Enforce toolset/promptset boundary on tools/call and prompts/get ([#3036](https://github.com/googleapis/mcp-toolbox/issues/3036)) ([c739b80](https://github.com/googleapis/mcp-toolbox/commit/c739b805ba5ab0e156016fe7c8ce67bc1c138e5a))
+* **tools/http:** Prevent path traversal and base path scope escape ([#3218](https://github.com/googleapis/mcp-toolbox/issues/3218)) ([80a6602](https://github.com/googleapis/mcp-toolbox/commit/80a66021205e032a424fff87b3dc6d92da58aa77))
+* **tools/looker:** Return a 401 error to MCP client when Looker returns a 401 ([#3233](https://github.com/googleapis/mcp-toolbox/issues/3233)) ([4f409a3](https://github.com/googleapis/mcp-toolbox/commit/4f409a3283d533bddcf4756a1d58c228744b3931))
+
 ## [1.2.0](https://github.com/googleapis/mcp-toolbox/compare/v1.1.0...v1.2.0) (2026-05-07)
 
 
